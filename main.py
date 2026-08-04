@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ================== НАСТРОЙКИ ==================
-BOT_TOKEN = "8850394642:AAHvMzqaXy3BA9DGy3C6saYCNZLA09CAuzc"  # ВАШ ТОКЕН
+BOT_TOKEN = "8850394642:AAFSVcUFOBE9WdAQxNVdDLzTg7GBpN8x1yc"  # ВАШ ТОКЕН
 CHAT_ID = "8078921787"  # ВАШ CHAT_ID
 
 CHECK_INTERVAL = 90          # секунд между проверками

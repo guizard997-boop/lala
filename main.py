@@ -8,7 +8,7 @@ from datetime import datetime
 
 # ================== НАСТРОЙКИ (МАКСИМАЛЬНО ЖЁСТКИЙ РЕЖИМ) ==================
 BOT_TOKEN = "8850394642:AAFSVcUFOBE9WdAQxNVdDLzTg7GBpN8x1yc"
-CHAT_ID = "8850394642"
+CHAT_ID = "8078921787"
 
 CHECK_INTERVAL = 90
 MIN_YEAR = 2013

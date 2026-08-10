@@ -11,13 +11,26 @@ BOT_TOKEN = "8850394642:AAFSVcUFOBE9WdAQxNVdDLzTg7GBpN8x1yc"
 CHAT_ID = "8078921787"
 
 CHECK_INTERVAL = 90
-MIN_YEAR = 1990
+MIN_YEAR = 2005
 WHOLESALE_MARGIN = 0.20
-MIN_DISCOUNT_TO_NOTIFY = 0.15
+MIN_DISCOUNT_TO_NOTIFY = 0.12
 MIN_SIMILAR_ADS = 5
 CITY_ID = 103184
 SEEN_FILE = "seen_ads.json"
 USD_KGS_RATE = 87.5
+MARKET_PERCENTILE = 15
+
+PREFERRED_MAKES = {
+    "toyota", "lexus", "bmw", "mercedes", "mercedes-benz", "audi",
+    "honda", "nissan", "mazda", "subaru", "volkswagen", "vw",
+    "infiniti", "acura", "porsche", "land rover", "range rover",
+    "volvo", "mini", "genesis"
+}
+
+STRICT_MAKES = {
+    "hyundai", "kia", "daewoo", "ravon", "ssangyong", "chery",
+    "geely", "haval", "great wall", "byd", "lifan", "faw"
+}
 
 KNOWN_MAKES = {
     "toyota", "lexus", "honda", "nissan", "hyundai", "kia", "bmw", "mercedes",
@@ -25,7 +38,8 @@ KNOWN_MAKES = {
     "subaru", "mitsubishi", "suzuki", "opel", "skoda", "renault", "peugeot",
     "citroen", "volvo", "land rover", "range rover", "jeep", "dodge", "chrysler",
     "infiniti", "acura", "genesis", "ssangyong", "daewoo", "ravon", "geely",
-    "chery", "haval", "great wall", "byd", "tesla", "porsche", "mini", "daihatsu"
+    "chery", "haval", "great wall", "byd", "tesla", "porsche", "mini", "daihatsu",
+    "lifan", "faw", "uaz", "lada", "ваз"
 }
 
 JUNK_KEYWORDS = [
@@ -39,6 +53,16 @@ JUNK_KEYWORDS = [
     "фара", "фары", "передняя фара", "задняя фара", "стоп", "стопы",
     "стоп-сигнал", "стоп сигнал", "задний стоп", "передний стоп",
     "фонарь", "фонари", "поворотник", "поворотники"
+]
+
+DAMAGE_KEYWORDS = [
+    "битый", "битая", "битое", "бит", "после дтп", "после аварии",
+    "аварийный", "аварийная", "дtp", "дтп", "не на ходу", "не находу",
+    "под восстановление", "на запчасти", "на запчасть", "требует ремонта",
+    "нужен ремонт", "кузовной", "после удара", "удар в", "вмятин",
+    "скручен", "скрутка", "некондиция", "не кондиция", "на разбор",
+    "распил", "каркас", "только на запчасти", "без документов",
+    "проблемы с документами", "конструктор", "распилен"
 ]
 
 INSTALLMENT_KEYWORDS = [
@@ -185,6 +209,14 @@ def is_junk_title(title):
     return False
 
 
+def is_damaged(title, description=""):
+    text = (title + " " + (description or "")).lower()
+    for word in DAMAGE_KEYWORDS:
+        if word in text:
+            return True
+    return False
+
+
 def is_installment(title, description=""):
     text = (title + " " + (description or "")).lower()
     for word in INSTALLMENT_KEYWORDS:
@@ -230,23 +262,17 @@ def get_clean_price_usd(ad):
     currency = (ad.get("currency") or "").upper().strip()
     symbol = (ad.get("symbol") or "").upper().strip()
 
-    is_usd = currency in ("USD", "\( ") or symbol in (" \)", "USD")
-    is_kgs = currency in ("KGS", "COM", "СОМ") or symbol in ("COM", "С", "СОМ")
-
-    if is_usd:
+    if currency in ("USD", "\( ") or symbol in (" \)", "USD"):
         usd = price
-    elif is_kgs:
+    elif currency in ("KGS", "COM", "СОМ", "SOM") or symbol in ("COM", "С", "СОМ", "SOM"):
         usd = price / USD_KGS_RATE
     else:
-        usd = price / USD_KGS_RATE if price > 5000 else price
+        if price >= 80000:
+            usd = price / USD_KGS_RATE
+        else:
+            usd = price
 
-    if is_kgs and 3500 <= price <= 65000:
-        usd = price
-
-    if usd is None or usd < 1500 or usd > 90000:
-        return None
-
-    if is_kgs and price < 80000 and not (3500 <= price <= 65000):
+    if usd is None or usd < 2000 or usd > 90000:
         return None
 
     return round(usd)
@@ -283,12 +309,10 @@ def get_ads(page=1, q=None, per_page=40, year_from=None, year_to=None):
 
 
 def remove_outliers(prices):
-    """Сильнее убираем дорогие выбросы"""
     if len(prices) < 5:
         return prices
     med = statistics.median(prices)
-    # Более жёстко режем верхние цены
-    filtered = [p for p in prices if med * 0.45 <= p <= med * 1.35]
+    filtered = [p for p in prices if med * 0.40 <= p <= med * 1.30]
     return filtered if len(filtered) >= 4 else prices
 
 
@@ -319,10 +343,14 @@ def get_market_price(make, model, year):
     year_to = year + 3 if year else None
 
     items = get_ads(q=query, per_page=60, year_from=year_from, year_to=year_to)
+    items += get_ads(page=2, q=query, per_page=40, year_from=year_from, year_to=year_to)
+
     prices = []
 
     for item in items:
         if is_junk_title(item.get("title", "")):
+            continue
+        if is_damaged(item.get("title", ""), item.get("description", "")):
             continue
 
         item_year = extract_year(item.get("title", ""))
@@ -334,7 +362,7 @@ def get_market_price(make, model, year):
             continue
 
         price = get_clean_price_usd(item)
-        if price and 1500 < price < 90000:
+        if price and 2000 < price < 90000:
             prices.append(price)
 
     prices = remove_outliers(prices)
@@ -342,8 +370,7 @@ def get_market_price(make, model, year):
     if len(prices) < MIN_SIMILAR_ADS:
         return None, len(prices), None
 
-    # 20-й перцентиль — более низкая и реалистичная рыночная цена
-    market_hard = percentile(prices, 20)
+    market_hard = percentile(prices, MARKET_PERCENTILE)
     market_median = statistics.median(prices)
 
     return market_hard, len(prices), market_median
@@ -358,6 +385,10 @@ def analyze_and_notify(ad, seen):
     description = ad.get("description") or ""
 
     if is_junk_title(title):
+        seen.add(ad_id)
+        return
+
+    if is_damaged(title, description):
         seen.add(ad_id)
         return
 
@@ -384,6 +415,10 @@ def analyze_and_notify(ad, seen):
         return
 
     make, model = extract_make_model(title)
+    if not make:
+        seen.add(ad_id)
+        return
+
     market_price, count, market_median = get_market_price(make, model, year)
 
     if not market_price or count < MIN_SIMILAR_ADS:
@@ -396,14 +431,29 @@ def analyze_and_notify(ad, seen):
     potential_profit = market_price - asking
 
     urgent = is_urgent(title, description)
+    is_preferred = make in PREFERRED_MAKES
+    is_strict = make in STRICT_MAKES
+
+    if is_preferred:
+        min_discount = 0.10
+        max_ask_ratio = 1.10
+    elif is_strict:
+        min_discount = 0.18
+        max_ask_ratio = 1.05
+    else:
+        min_discount = MIN_DISCOUNT_TO_NOTIFY
+        max_ask_ratio = 1.08
 
     is_excellent_deal = (
-        discount >= MIN_DISCOUNT_TO_NOTIFY and
-        asking <= wholesale_target * 1.08
+        discount >= min_discount and
+        asking <= wholesale_target * max_ask_ratio
     )
 
-    if urgent and discount >= 0.12:
+    if urgent and discount >= (0.10 if is_preferred else 0.14):
         is_excellent_deal = True
+
+    if potential_profit < 800:
+        is_excellent_deal = False
 
     if not is_excellent_deal:
         seen.add(ad_id)
@@ -420,7 +470,7 @@ def analyze_and_notify(ad, seen):
     wholesale_kgs = round(wholesale_target * USD_KGS_RATE)
     median_kgs = round(market_median * USD_KGS_RATE) if market_median else 0
 
-    urgent_mark = "⚡ <b>СРОЧНО!</b>\n\n" if urgent else ""
+    urgent_mark = "⚡ <b>СРОЧНО!</b>\n" if urgent else ""
 
     text = (
         f"{urgent_mark}"
@@ -428,7 +478,7 @@ def analyze_and_notify(ad, seen):
         f"<b>{title}</b>\n"
         f"📍 {city}\n\n"
         f"💰 <b>Цена продавца:</b> {price_kgs:,.0f} сом  (\~{asking:.0f}$)\n"
-        f"📊 <b>Рыночная (20%):</b> \~{market_kgs:,.0f} сом  (\~{market_price:.0f}$)\n"
+        f"📊 <b>Рыночная ({MARKET_PERCENTILE}%):</b> \~{market_kgs:,.0f} сом  (\~{market_price:.0f}$)\n"
         f"📈 Медиана: \~{median_kgs:,.0f} сом\n"
         f"🛒 <b>Скупочная цель (−{int(WHOLESALE_MARGIN*100)}%):</b> \~{wholesale_kgs:,.0f} сом  (\~{wholesale_target:.0f}$)\n\n"
         f"📉 Ниже рынка на: <b>{discount*100:.1f}%</b>\n"
@@ -439,7 +489,7 @@ def analyze_and_notify(ad, seen):
 
     send_telegram(text, photo)
     status = "СРОЧНО" if urgent else "ВЫГОДНО"
-    print(f"[{datetime.now()}] 🔥 {status} | {title[:45]} | −{discount*100:.1f}% | +{potential_profit:.0f}$")
+    print(f"[{datetime.now()}] 🔥 {status} | {title[:50]} | −{discount*100:.1f}% | +{potential_profit:.0f}$")
 
     seen.add(ad_id)
 
@@ -447,11 +497,11 @@ def analyze_and_notify(ad, seen):
 def main():
     print("Бот перекупа запущен...")
     send_telegram(
-        f"✅ <b>Бот обновлён</b>\n\n"
-        f"• Рыночная цена снижена (20-й перцентиль)\n"
-        f"• Не кидает фары/стопы\n"
-        f"• Не кидает нерастаможенные\n"
-        f"• Скупочная цель: −{int(WHOLESALE_MARGIN*100)}%"
+        f"✅ <b>Бот обновлён v3</b>\n\n"
+        f"• Корейцы и дешёвый сегмент — только при сильной скидке\n"
+        f"• Битые / после ДТП / не на ходу — отсекаются\n"
+        f"• Год от {MIN_YEAR}+\n"
+        f"• Скупочная: −{int(WHOLESALE_MARGIN*100)}%, перцентиль {MARKET_PERCENTILE}"
     )
 
     seen = load_seen()

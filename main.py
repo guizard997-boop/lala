@@ -583,4 +583,361 @@ def fetch_mashina_feed(pages=2):
     return results
 
 
-def remove_price_outliers(
+def remove_price_outliers(prices):
+    if len(prices) < 4:
+        return prices
+    med = statistics.median(prices)
+    cleaned = [p for p in prices if med * 0.50 <= p <= med * 1.40]
+    return cleaned if len(cleaned) >= 3 else prices
+
+
+def percentile(data, percent):
+    if not data:
+        return None
+    s = sorted(data)
+    n = len(s)
+    idx = (n - 1) * percent / 100
+    f, c = int(idx), min(int(idx) + 1, n - 1)
+    if f == c:
+        return s[f]
+    return s[f] * (c - idx) + s[c] * (idx - f)
+
+
+def calc_market_metrics(prices):
+    """
+    Возвращает:
+      market_median — рыночная (медиана)
+      quick_sell — цена быстрой продажи (умеренный низ)
+      cleaned — очищенные цены
+    """
+    cleaned = remove_price_outliers(prices)
+    if len(cleaned) < MIN_COMPARABLES:
+        return None, None, cleaned
+    market = statistics.median(cleaned)
+    quick = percentile(cleaned, QUICK_SELL_PERCENTILE)
+    # quick_sell не выше медианы
+    if quick and market and quick > market:
+        quick = market * 0.95
+    return market, quick, cleaned
+
+
+def calc_max_buy(quick_sell, expenses, required_profit):
+    if not quick_sell or quick_sell <= 0:
+        return None
+    after_reserve = quick_sell * (1 - NEGOTIATION_RESERVE)
+    max_buy = after_reserve - expenses - required_profit
+    if quick_sell > 0 and (quick_sell - max(max_buy, 0)) / quick_sell < MIN_PROFIT_RATIO:
+        max_buy = quick_sell * (1 - MIN_PROFIT_RATIO) - expenses
+    return max(0, round(max_buy))
+
+
+def calc_deal_score(
+    seller, market, quick_sell, max_buy, net_profit, n_comps,
+    liquidity_coef, year, mileage, minor_cost, priority=False,
+):
+    """Рейтинг 0–100. Высокий балл только у реальной скупки."""
+    score = 40.0
+
+    # Ниже рынка (главный фактор)
+    if market and market > 0:
+        below = (market - seller) / market
+        score += max(-30, min(35, below * 100 * 1.1))
+
+    # Чистая прибыль
+    if net_profit >= 1500:
+        score += 22
+    elif net_profit >= 1000:
+        score += 16
+    elif net_profit >= 700:
+        score += 11
+    elif net_profit >= 550:
+        score += 6
+    elif net_profit < 400:
+        score -= 15
+    else:
+        score -= 5
+
+    # Только цена <= MAX_BUY даёт сильный плюс
+    if max_buy and max_buy > 0:
+        if seller <= max_buy * 0.97:
+            score += 16
+        elif seller <= max_buy:
+            score += 10
+        else:
+            score -= 20
+
+    # Ликвидность критична для перекупа
+    score += (liquidity_coef - 1.0) * 30
+
+    # Аналоги
+    if n_comps >= 12:
+        score += 6
+    elif n_comps >= 6:
+        score += 4
+    elif n_comps >= 3:
+        score += 1
+    else:
+        score -= 8
+
+    # Год
+    if year:
+        if year >= 2018:
+            score += 5
+        elif year >= 2014:
+            score += 2
+        elif year < 2008:
+            score -= 6
+
+    # Пробег
+    if mileage:
+        if mileage < 80000:
+            score += 4
+        elif mileage < 150000:
+            score += 1
+        elif mileage > 250000:
+            score -= 6
+
+    # Мелкий ремонт
+    if minor_cost >= 400:
+        score -= 8
+    elif minor_cost >= 200:
+        score -= 4
+    elif minor_cost > 0:
+        score -= 2
+
+    if priority:
+        score += 5
+
+    return int(max(0, min(100, round(score))))
+
+
+def reliability_label(n):
+    if n >= 10:
+        return "высокая"
+    if n >= 5:
+        return "средняя"
+    return "низкая"
+
+
+def find_comparables(target_specs):
+    make = target_specs.get("make")
+    model = target_specs.get("model")
+    year = target_specs.get("year")
+    if not make or not year:
+        return []
+
+    query = make
+    if model:
+        query += " " + model.split()[0]
+    blob_model = f"{model or ''} {target_specs.get('fuel') or ''}".lower()
+    if make == "toyota" and "camry" in (model or ""):
+        if target_specs.get("fuel") == "hybrid" or "hybrid" in blob_model:
+            query = "toyota camry hybrid"
+
+    year_from = max(year - YEAR_TOLERANCE, 1985)
+    year_to = year + YEAR_TOLERANCE
+    items = get_ads(q=query, per_page=60, year_from=year_from, year_to=year_to)
+    items += get_ads(page=2, q=query, per_page=40, year_from=year_from, year_to=year_to)
+
+    comps = []
+    for item in items:
+        if is_critical_bad(item.get("title") or "", item.get("description") or ""):
+            continue
+        sp = parse_ad_specs(item)
+        if not sp["price"]:
+            continue
+        if not specs_match(target_specs, sp):
+            continue
+        sp["source"] = "lalafo"
+        comps.append(sp)
+
+    for p in fetch_mashina_market_prices(make, model, year):
+        comps.append({
+            "make": make, "model": model, "year": year, "price": p,
+            "source": "mashina", "title": "", "description": "",
+            "mileage": None, "engine": None, "fuel": target_specs.get("fuel"),
+            "transmission": None, "drive": None, "body": None, "ad": None,
+        })
+    return comps
+
+
+def analyze_and_notify(ad, seen):
+    ad_id = ad.get("id")
+    if ad_id in seen:
+        return
+
+    title = ad.get("title") or ""
+    description = ad.get("description") or ""
+
+    if is_critical_bad(title, description):
+        seen.add(ad_id)
+        return
+
+    target = parse_ad_specs(ad)
+    if not target["price"] or not target["make"] or not target["year"]:
+        seen.add(ad_id)
+        return
+    if target["year"] < MIN_YEAR:
+        seen.add(ad_id)
+        return
+
+    priority = is_priority_model(target, title, description)
+    base_exp = PRIORITY_BASE_EXPENSES_USD if priority else BASE_EXPENSES_USD
+    req_profit = PRIORITY_REQUIRED_PROFIT_USD if priority else REQUIRED_PROFIT_USD
+    minor_cost = estimate_minor_repair_cost(title, description)
+    total_expenses = base_exp + minor_cost
+
+    comps = find_comparables(target)
+    prices = [c["price"] for c in comps if c.get("price")]
+    src_lalafo = sum(1 for c in comps if c.get("source") == "lalafo")
+    src_mashina = sum(1 for c in comps if c.get("source") == "mashina")
+
+    # Для 3 аналогов считаем только если цена очень жирная (ниже обработаем)
+    market, quick_sell, cleaned = calc_market_metrics(prices)
+    n_clean = len(cleaned) if cleaned else 0
+    if market is None or quick_sell is None:
+        # fallback: если 3 цены — всё же попробуем
+        cleaned = remove_price_outliers(prices)
+        if len(cleaned) < 3:
+            print(f"  skip (мало данных): {title[:40]} | n={len(prices)}")
+            seen.add(ad_id)
+            return
+        market = statistics.median(cleaned)
+        quick_sell = percentile(cleaned, QUICK_SELL_PERCENTILE) or market * 0.94
+        if quick_sell > market:
+            quick_sell = market * 0.95
+        n_clean = len(cleaned)
+
+    max_buy = calc_max_buy(quick_sell, total_expenses, req_profit)
+    if not max_buy:
+        seen.add(ad_id)
+        return
+
+    seller = target["price"]
+    net_profit = quick_sell - seller - total_expenses
+    below_market_pct = ((market - seller) / market * 100) if market else 0
+
+    liq_label, liq_coef = get_liquidity(target["make"], target["model"])
+
+    # ===== ЖЁСТКИЕ ВОРОТА: только реальная скупка =====
+    if seller > max_buy:
+        if not ALLOW_NEGOTIATE or seller > max_buy * (1 + NEGOTIATE_BAND):
+            print(f"  skip (выше скупки): {title[:35]} | {seller}$ > {max_buy}$")
+            seen.add(ad_id)
+            return
+        status = "negotiate"
+        status_line = "🟡 <b>МОЖНО ТОРГОВАТЬСЯ</b>"
+    else:
+        status = "buy"
+        status_line = "🔥 <b>СКУПОЧНАЯ ЦЕНА</b>"
+
+    if net_profit < MIN_NET_PROFIT_USD and not (priority and net_profit >= 450):
+        print(f"  skip (прибыль {net_profit:.0f}$): {title[:40]}")
+        seen.add(ad_id)
+        return
+
+    if below_market_pct < MIN_BELOW_MARKET_PCT and status == "buy":
+        if not (priority and below_market_pct >= 5):
+            print(f"  skip (мало ниже рынка {below_market_pct:.1f}%): {title[:40]}")
+            seen.add(ad_id)
+            return
+
+    # Низкая ликвидность — почти не берём
+    if liq_label == "низкая" and not priority:
+        print(f"  skip (низкая ликвидность): {title[:40]}")
+        seen.add(ad_id)
+        return
+
+    # Мало аналогов — только очень сильный дисконт
+    if n_clean < MIN_COMPARABLES:
+        if below_market_pct < 14 or net_profit < 800:
+            print(f"  skip (мало аналогов {n_clean}): {title[:40]}")
+            seen.add(ad_id)
+            return
+
+    score = calc_deal_score(
+        seller, market, quick_sell, max_buy, net_profit, n_clean,
+        liq_coef, target["year"], target.get("mileage"), minor_cost, priority,
+    )
+
+    min_score = PRIORITY_MIN_SCORE if priority else MIN_SCORE_TO_SEND
+    if status == "negotiate":
+        min_score = max(min_score, NEGOTIATE_MIN_SCORE)
+
+    if score < min_score:
+        print(f"  skip (score {score} < {min_score}): {title[:40]}")
+        seen.add(ad_id)
+        return
+
+    if ad.get("source") == "mashina" or str(ad.get("id") or "").startswith("mashina_"):
+        url = ad.get("url") or ""
+        source_label = "Mashina"
+    else:
+        url = "https://lalafo.kg" + (ad.get("url") or "")
+        source_label = "Lalafo"
+
+    city = ad.get("city") or "Бишкек"
+    photo = None
+    if ad.get("images"):
+        photo = ad["images"][0].get("original_url") or ad["images"][0].get("thumbnail_url")
+
+    rel = reliability_label(n_clean)
+    # Короткое сообщение — без воды
+    text = (
+        f"{status_line}\n"
+        f"🚗 <b>{title}</b>\n"
+        f"📍 {city} · {source_label}\n\n"
+        f"💰 Продавец: <b>${seller:,.0f}</b>\n"
+        f"🎯 Макс. скупка: <b>${max_buy:,.0f}</b>\n"
+        f"📊 Рынок: ${market:,.0f} · ⚡ Быстрая: ${quick_sell:,.0f}\n\n"
+        f"📉 Ниже рынка: <b>{below_market_pct:.1f}%</b>\n"
+        f"💵 Чистая прибыль: <b>~${net_profit:,.0f}</b>\n"
+        f"🔧 Расходы: ${total_expenses:,.0f}"
+        + (f" (косметика ${minor_cost})" if minor_cost else "")
+        + f"\n"
+        f"📊 Аналогов: {n_clean} · {rel} · {liq_label}\n"
+        f"⭐ <b>{score}/100</b>\n\n"
+        f"<a href='{url}'>Открыть</a>"
+    )
+
+    send_telegram(text, photo)
+    print(f"[{datetime.now()}] {status.upper()} {score}/100 | {title[:40]} | {seller}$ profit {net_profit:.0f}$")
+    seen.add(ad_id)
+
+
+def main():
+    print("Бот REAL_BUY / MAX_BUY запущен...")
+    send_telegram(
+        "🎩 <b>Господин Дияр, ваш бот полностью готов служить вам.</b>"
+    )
+    seen = load_seen()
+    print(f"seen={len(seen)}")
+
+    while True:
+        try:
+            print(f"\n[{datetime.now()}] Проверка...")
+
+            ads_lalafo = get_ads(page=1, per_page=40)
+            print(f"Lalafo: {len(ads_lalafo)}")
+            for ad in ads_lalafo:
+                ad["source"] = ad.get("source") or "lalafo"
+                analyze_and_notify(ad, seen)
+
+            try:
+                ads_mashina = fetch_mashina_feed(pages=2)
+                print(f"Mashina: {len(ads_mashina)}")
+                for ad in ads_mashina:
+                    analyze_and_notify(ad, seen)
+            except Exception as e:
+                print("Mashina feed fail:", e)
+
+            save_seen(seen)
+            print(f"Цикл OK, сон {CHECK_INTERVAL}с")
+            time.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            print("Ошибка:", e)
+            time.sleep(20)
+
+
+if __name__ == "__main__":
+    main()

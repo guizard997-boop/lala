@@ -7,13 +7,8 @@ import requests
 from datetime import datetime
 
 # ================== НАСТРОЙКИ ==================
-BOT_TOKEN = "8850394642:AAFSVcUFOBE9WdAQxNVdDLzTg7GBpN8x1yc"
-CHAT_ID = "8078921787"
-
-# ИИ (опционально)
-AI_API_KEY = "ВСТАВЬ_СВОЙ_КЛЮЧ_СЮДА"
-AI_BASE_URL = "https://api.openai.com/v1"
-AI_MODEL = "gpt-4o-mini"
+BOT_TOKEN = "8677610768:AAHDOe1Xzm-sS_3GnRZvEM38GlQmx7uLJ7c"
+CHAT_ID = "8569472160"
 
 CHECK_INTERVAL = 45
 MIN_YEAR = 2005
@@ -21,26 +16,26 @@ CITY_ID = 103184
 SEEN_FILE = "seen_ads.json"
 USD_KGS_RATE = 87.5
 
-# ---- ЭКОНОМИКА СКУПКИ (главное) ----
-# MAX_BUY = REAL_QUICK_SELL - EXPENSES - NEGOTIATION_RESERVE - REQUIRED_PROFIT
-EXPENSES_USD = 250              # оформление, мелкий ремонт, объявления, бензин
-NEGOTIATION_RESERVE = 0.04      # 4% — запас на торг при перепродаже
-REQUIRED_PROFIT_USD = 600       # минимальная чистая прибыль, которую хочешь
-# Дополнительно: не брать, если запас прибыли < этого %
-MIN_PROFIT_RATIO = 0.06         # хотя бы ~6% от цены быстрой продажи
+# ---- ЭКОНОМИКА СКУПКИ ----
+BASE_EXPENSES_USD = 200          # оформление, объявления, бензин
+NEGOTIATION_RESERVE = 0.03       # 3% запас на торг при перепродаже
+REQUIRED_PROFIT_USD = 500        # минимальная целевая прибыль
+MIN_PROFIT_RATIO = 0.05          # минимум ~5% от быстрой продажи
 
-# Рыночная «быстрая продажа» = консервативный низ нормального рынка
-QUICK_SELL_PERCENTILE = 22      # 22-й перцентиль очищенных аналогов
-MIN_COMPARABLES = 5             # меньше — не считаем MAX_BUY уверенно
+# Рынок
+MARKET_MEDIAN = True
+QUICK_SELL_PERCENTILE = 35       # было 22 — слишком жёстко; 35 = реалистичная быстрая продажа
+MIN_COMPARABLES = 3              # 3+ уже считаем
 YEAR_TOLERANCE = 1
-MILEAGE_TOLERANCE = 0.30        # ±30%
+MILEAGE_TOLERANCE = 0.35
 
-# ---- ПРИОРИТЕТНЫЕ МОДЕЛИ ----
-# Camry Hybrid 70 (XV70): примерно 2017–2024, ликвид в Бишкеке
-# Для них: мягче порог данных и чуть ниже требуемая прибыль
-PRIORITY_REQUIRED_PROFIT_USD = 450
-PRIORITY_MIN_COMPARABLES = 4
-PRIORITY_EXPENSES_USD = 200
+# Отправка
+MIN_SCORE_TO_SEND = 70           # ниже 70 не кидаем
+NEGOTIATE_BAND = 0.06            # до +6% выше MAX_BUY = "можно торговаться"
+
+# Приоритет Camry Hybrid 70
+PRIORITY_REQUIRED_PROFIT_USD = 400
+PRIORITY_BASE_EXPENSES_USD = 150
 
 KNOWN_MAKES = {
     "toyota", "lexus", "honda", "nissan", "hyundai", "kia", "bmw", "mercedes",
@@ -52,57 +47,76 @@ KNOWN_MAKES = {
     "lifan", "faw", "uaz", "lada", "ваз"
 }
 
+# Высокая ликвидность в Бишкеке
+HIGH_LIQUIDITY = {
+    ("toyota", "camry"), ("toyota", "corolla"), ("toyota", "rav4"),
+    ("toyota", "land"), ("toyota", "prado"), ("toyota", "highlander"),
+    ("lexus", "rx"), ("lexus", "gx"), ("lexus", "lx"), ("lexus", "es"),
+    ("honda", "cr"), ("honda", "accord"), ("honda", "fit"),
+    ("hyundai", "tucson"), ("hyundai", "sonata"), ("hyundai", "elantra"),
+    ("kia", "sportage"), ("kia", "k5"), ("kia", "sorento"),
+    ("nissan", "x"), ("nissan", "patrol"), ("bmw", "x5"), ("bmw", "x3"),
+    ("mercedes", "e"), ("mercedes-benz", "e"),
+}
+
+MEDIUM_LIQUIDITY_MAKES = {
+    "toyota", "lexus", "honda", "nissan", "hyundai", "kia", "bmw", "mercedes",
+    "mercedes-benz", "audi", "subaru", "mazda", "volkswagen", "vw"
+}
+
 JUNK_KEYWORDS = [
-    "ремонт", "запчаст", "диск", "диски", "ремень", "турбина", "двигатель",
-    "коробка", "акпп", "мкпп", "бампер", "крыло", "дверь", "капот",
-    "стекло", "зеркало", "подшипник", "сайлент", "амортизатор", "стойка",
-    "радиатор", "генератор", "стартер", "компрессор", "кондиционер",
-    "шины", "резина", "колесо", "колпак", "ключ", "замок",
-    "сигнализация", "магнитола", "камера", "парктроник", "услуг", "работа",
-    "разбор", "контрактн", "б/у запчаст", "продаю запчаст", "в разборе",
-    "фара", "фары", "стоп", "стопы", "фонарь", "поворотник"
+    "запчаст", "диск", "диски", "ремень", "турбина", "бампер", "крыло",
+    "дверь", "капот", "стекло", "зеркало", "подшипник", "сайлент",
+    "амортизатор", "стойка", "радиатор", "генератор", "стартер",
+    "компрессор", "кондиционер", "шины", "резина", "колесо", "колпак",
+    "ключ", "замок", "сигнализация", "магнитола", "камера", "парктроник",
+    "услуг", "работа", "разбор", "контрактн", "б/у запчаст", "продаю запчаст",
+    "в разборе", "фара", "фары", "стоп", "стопы", "фонарь", "поворотник",
 ]
 
-DAMAGE_KEYWORDS = [
-    "битый", "битая", "битое", "бит", "после дтп", "после аварии",
-    "аварийный", "аварийная", "дтп", "не на ходу", "не находу",
-    "под восстановление", "на запчасти", "на запчасть", "требует ремонта",
-    "нужен ремонт", "кузовной", "после удара", "вмятин",
-    "скручен", "скрутка", "некондиция", "на разбор",
-    "распил", "каркас", "только на запчасти", "конструктор", "распилен"
+# Критические — сразу исключаем
+CRITICAL_DAMAGE_KEYWORDS = [
+    "битый", "битая", "битое", "после дтп", "после аварии", "серьёзн",
+    "серьезн", "аварийный", "аварийная", "не на ходу", "не находу",
+    "на запчасти", "на запчасть", "распил", "каркас", "конструктор",
+    "распилен", "только на запчасти", "под восстановление кузова",
+]
+
+# Мелкие — НЕ исключаем, считаем расходы
+MINOR_DAMAGE_KEYWORDS = [
+    "вмятин", "царапин", "скол", "косметик", "мелкий ремонт",
+    "требует ремонта", "нужен ремонт", "подкраска", "покраска",
+    "ржавчин", "потёртост", "потертост", "бампер повреж",
+    "замена расход", "требует вложений", "есть дефект",
 ]
 
 INSTALLMENT_KEYWORDS = [
     "рассрочк", "рассрочка", "первоначальн", "первоначальный взнос",
-    "взнос", "в кредит", "кредит", "ежемесячн", "платеж", "платёж",
-    "лизинг", "в месяц", "по месяц", "оплата частями", "частями",
-    "первый взнос", "перв. взнос", "пв ", " пв", "0-0-24", "0-0-12",
-    "без первоначального", "без взноса"
+    "в кредит", "кредит", "ежемесячн", "платеж", "платёж", "лизинг",
+    "в месяц", "оплата частями", "частями", "первый взнос", "0-0-24", "0-0-12",
+    "без первоначального", "без взноса",
 ]
 
 ORDER_KEYWORDS = [
     "под заказ", "подзаказ", "на заказ", "заказ из", "заказать",
     "из китая", "из кореи", "из японии", "из оаэ", "из дубая",
     "из сша", "из америки", "из европы", "в пути", "едет",
-    "ожидается", "ожидание", "прибудет", "приход", "доставка из",
-    "пригон", "пригнать", "привезу", "привезем", "можно заказать",
-    "заказной", "с аукциона", "copart", "iaai", "manheim"
+    "ожидается", "прибудет", "доставка из", "пригон", "пригнать",
+    "с аукциона", "copart", "iaai", "manheim",
 ]
 
 NOT_CLEARED_KEYWORDS = [
     "не растаможен", "не растаможена", "не растаможено",
     "без растаможки", "без растамож", "не растаможенная",
-    "не на учете", "не стоит на учете", "на учете не стоит",
-    "временный учет", "временный учёт", "транзит",
-    "не оформлен", "не оформлена", "без птс", "без учёта",
-    "на транзите", "транзитные номера", "временные номера"
+    "не на учете", "не стоит на учете", "временный учет", "временный учёт",
+    "транзит", "не оформлен", "без птс", "на транзите", "транзитные номера",
 ]
 
 URGENT_KEYWORDS = [
     "срочно", "срочная продажа", "срочно продаю", "срочн",
     "цена снижена", "снизил цену", "торг реальному", "торг уместен",
     "ниже рынка", "отдам дешево", "отдам дёшево", "быстро продам",
-    "нужны деньги", "срочный выкуп"
+    "нужны деньги", "срочный выкуп",
 ]
 
 HEADERS = {
@@ -112,6 +126,14 @@ HEADERS = {
     "language": "ru_RU",
     "country-id": "12",
 }
+
+CYRILLIC_MAKE_MAP = {
+    "тойота": "toyota", "лексус": "lexus", "хонда": "honda", "ниссан": "nissan",
+    "хундай": "hyundai", "хендай": "hyundai", "киа": "kia", "бмв": "bmw",
+    "мерседес": "mercedes", "ауди": "audi", "фольксваген": "volkswagen",
+    "мазда": "mazda", "субару": "subaru", "мицубиси": "mitsubishi", "камри": "camry",
+}
+
 
 # ================================================
 
@@ -128,7 +150,7 @@ def load_seen():
 
 def save_seen(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(seen)[-3000:], f)
+        json.dump(list(seen)[-4000:], f)
 
 
 def send_telegram(text, photo_url=None):
@@ -173,25 +195,6 @@ def extract_year(title):
     return int(m.group(1)) if m else None
 
 
-CYRILLIC_MAKE_MAP = {
-    "тойота": "toyota",
-    "лексус": "lexus",
-    "хонда": "honda",
-    "ниссан": "nissan",
-    "хундай": "hyundai",
-    "хендай": "hyundai",
-    "киа": "kia",
-    "бмв": "bmw",
-    "мерседес": "mercedes",
-    "ауди": "audi",
-    "фольксваген": "volkswagen",
-    "мазда": "mazda",
-    "субару": "subaru",
-    "мицубиси": "mitsubishi",
-    "камри": "camry",  # иногда пишут без марки
-}
-
-
 def extract_make_model(title):
     if not title:
         return None, None
@@ -199,10 +202,8 @@ def extract_make_model(title):
     clean = re.sub(r"\s+", " ", clean).strip()
     clean = re.sub(r"\b(19|20)\d{2}\b", "", clean)
     clean = re.sub(r"\s*г\.?\s*", " ", clean).strip()
-    # нормализация кириллицы марок
     for cyr, lat in CYRILLIC_MAKE_MAP.items():
         clean = re.sub(rf"\b{cyr}\b", lat, clean)
-    # частые модели
     clean = clean.replace("камри", "camry").replace("гибрид", "hybrid")
     words = clean.split()
     if not words:
@@ -219,7 +220,6 @@ def extract_make_model(title):
                 make = two
                 model_parts = words[i + 2 : i + 4]
                 break
-    # если в тексте camry, а make не найден — toyota
     if not make and "camry" in clean:
         make = "toyota"
         model_parts = ["camry"]
@@ -233,11 +233,8 @@ def extract_make_model(title):
 
 
 def extract_mileage(text):
-    """Пробег в км из текста. None если нет."""
     if not text:
         return None
-    t = text.lower().replace(" ", "")
-    # 120000км, 120 тыс, 120000 km, пробег: 85 000
     patterns = [
         r"пробег[:\s]*(\d{1,3}[\s]?000|\d{4,7})\s*(км|km)?",
         r"(\d{1,3}[\s]?\d{3})\s*(км|km)",
@@ -259,7 +256,6 @@ def extract_mileage(text):
 
 
 def extract_engine(text):
-    """Объём двигателя примерно: 1.6, 2.0, 3.5 и т.д."""
     if not text:
         return None
     m = re.search(r"\b([1-6][.,]\d)\s*(л|l|cci|куб)?\b", text.lower())
@@ -273,50 +269,13 @@ def extract_fuel(text):
     t = (text or "").lower()
     if any(x in t for x in ["дизел", "diesel", "дизель"]):
         return "diesel"
-    if any(x in t for x in ["гибрид", "hybrid", "hv", "hybrid"] ):
+    if any(x in t for x in ["гибрид", "hybrid", "hv"]):
         return "hybrid"
     if any(x in t for x in ["электро", "electric", "ev "]):
         return "electric"
     if any(x in t for x in ["бензин", "petrol", "gas"]):
         return "petrol"
     return None
-
-
-def is_priority_model(specs, title="", description=""):
-    """
-    Приоритет: Toyota Camry Hybrid 70 (XV70).
-    Годы ~2017–2024, в названии camry/камри + hybrid/гибрид или просто camry 70.
-    """
-    make = (specs.get("make") or "").lower()
-    model = (specs.get("model") or "").lower()
-    year = specs.get("year")
-    blob = f"{title} {description} {model}".lower()
-
-    if make not in ("toyota",):
-        return False
-    if year and not (2017 <= year <= 2024):
-        return False
-
-    is_camry = ("camry" in blob) or ("камри" in blob) or ("camry" in model) or ("камри" in model)
-    is_hybrid = (
-        specs.get("fuel") == "hybrid"
-        or "hybrid" in blob
-        or "гибрид" in blob
-        or "гибрид" in model
-    )
-    is_70 = (
-        re.search(r"\b70\b", blob) is not None
-        or "xv70" in blob
-        or "xv-70" in blob
-        or (year is not None and 2017 <= year <= 2024)
-    )
-
-    # Camry Hybrid в годах 70-ки — приоритет даже без явной цифры 70
-    if is_camry and is_hybrid and year and 2017 <= year <= 2024:
-        return True
-    if is_camry and is_hybrid and is_70:
-        return True
-    return False
 
 
 def extract_transmission(text):
@@ -342,23 +301,63 @@ def extract_drive(text):
 def extract_body(text):
     t = (text or "").lower()
     mapping = [
-        ("седан", "sedan"),
-        ("хетч", "hatch"),
-        ("хэтч", "hatch"),
-        ("универсал", "wagon"),
-        ("внедорожник", "suv"),
-        ("кроссовер", "suv"),
-        ("suv", "suv"),
-        ("минивэн", "mpv"),
-        ("минивен", "mpv"),
-        ("пикап", "pickup"),
-        ("купе", "coupe"),
-        ("кабрио", "cabrio"),
+        ("седан", "sedan"), ("хетч", "hatch"), ("хэтч", "hatch"),
+        ("универсал", "wagon"), ("внедорожник", "suv"), ("кроссовер", "suv"),
+        ("suv", "suv"), ("минивэн", "mpv"), ("минивен", "mpv"),
+        ("пикап", "pickup"), ("купе", "coupe"),
     ]
     for k, v in mapping:
         if k in t:
             return v
     return None
+
+
+def is_priority_model(specs, title="", description=""):
+    make = (specs.get("make") or "").lower()
+    model = (specs.get("model") or "").lower()
+    year = specs.get("year")
+    blob = f"{title} {description} {model}".lower()
+    if make != "toyota":
+        return False
+    if year and not (2017 <= year <= 2024):
+        return False
+    is_camry = "camry" in blob or "камри" in blob
+    is_hybrid = specs.get("fuel") == "hybrid" or "hybrid" in blob or "гибрид" in blob
+    return bool(is_camry and is_hybrid and year and 2017 <= year <= 2024)
+
+
+def estimate_minor_repair_cost(title, description=""):
+    """Ориентировочные $ на мелкие недостатки."""
+    blob = f"{title} {description}".lower()
+    cost = 0
+    if text_has(blob, ["вмятин"]):
+        cost += 150
+    if text_has(blob, ["царапин", "скол", "потёртост", "потертост"]):
+        cost += 80
+    if text_has(blob, ["косметик", "подкраска", "покраска"]):
+        cost += 200
+    if text_has(blob, ["требует ремонта", "нужен ремонт", "требует вложений"]):
+        cost += 250
+    if text_has(blob, ["ржавчин"]):
+        cost += 120
+    if text_has(blob, ["замена расход", "расходник"]):
+        cost += 100
+    return min(cost, 800)
+
+
+def get_liquidity(make, model):
+    """Возвращает (уровень_строка, коэффициент 0.7–1.15)."""
+    make = (make or "").lower()
+    model = (model or "").lower()
+    first = model.split()[0] if model else ""
+    for (m, mod), _ in [((a, b), None) for a, b in HIGH_LIQUIDITY]:
+        pass
+    for hm, hmod in HIGH_LIQUIDITY:
+        if make == hm and (hmod in model or first.startswith(hmod) or hmod in first):
+            return "высокая", 1.12
+    if make in MEDIUM_LIQUIDITY_MAKES:
+        return "средняя", 1.0
+    return "низкая", 0.82
 
 
 def get_clean_price_usd(ad):
@@ -383,7 +382,6 @@ def get_clean_price_usd(ad):
 
 
 def parse_ad_specs(ad):
-    """Собрать характеристики объявления для сопоставления."""
     title = ad.get("title") or ""
     desc = ad.get("description") or ""
     blob = f"{title} {desc}"
@@ -405,11 +403,11 @@ def parse_ad_specs(ad):
     }
 
 
-def is_bad_listing(title, description=""):
+def is_critical_bad(title, description=""):
     blob = f"{title} {description}"
     if text_has(title, JUNK_KEYWORDS):
         return True
-    if text_has(blob, DAMAGE_KEYWORDS):
+    if text_has(blob, CRITICAL_DAMAGE_KEYWORDS):
         return True
     if text_has(blob, INSTALLMENT_KEYWORDS):
         return True
@@ -450,54 +448,142 @@ def get_ads(page=1, q=None, per_page=50, year_from=None, year_to=None):
 
 
 def specs_match(target, cand):
-    """
-    Максимально похожие аналоги:
-    brand + model + year±1 + (engine/fuel/trans/body/drive если есть) + mileage±30%.
-    Обязательны: make, model (базово), year±1.
-    Остальное — если указано у обоих, должно совпадать.
-    """
+    """Похожие авто. Если хар-ки нет у одного — не режем жёстко."""
     if not target.get("make") or not cand.get("make"):
         return False
-    if target["make"] != cand["make"] and target["make"] not in (cand["make"] or "") and (cand["make"] or "") not in target["make"]:
+    tm, cm = target["make"], cand["make"]
+    if tm != cm and tm not in (cm or "") and (cm or "") not in tm:
         return False
 
-    # model: хотя бы первое слово модели
     t_model = (target.get("model") or "").split()
     c_model = (cand.get("model") or "").split()
-    if t_model and c_model:
-        if t_model[0] != c_model[0]:
-            return False
-    elif t_model and not c_model:
+    if t_model and c_model and t_model[0] != c_model[0]:
         return False
 
     ty, cy = target.get("year"), cand.get("year")
     if ty and cy and abs(ty - cy) > YEAR_TOLERANCE:
         return False
-    if ty and not cy:
-        return False
 
-    # Опциональные поля — только если есть у обоих
+    # мягко: только если ОБА указали и не совпало
     for key in ("engine", "fuel", "transmission", "body", "drive"):
         tv, cv = target.get(key), cand.get(key)
         if tv and cv and tv != cv:
             return False
 
-    tm, cm = target.get("mileage"), cand.get("mileage")
-    if tm and cm and tm > 0:
-        if abs(cm - tm) / tm > MILEAGE_TOLERANCE:
+    tmi, cmi = target.get("mileage"), cand.get("mileage")
+    if tmi and cmi and tmi > 0:
+        if abs(cmi - tmi) / tmi > MILEAGE_TOLERANCE:
             return False
-
     return True
 
 
+def fetch_mashina_market_prices(make, model, year=None, pages=2):
+    if not make:
+        return []
+    q = make
+    if model:
+        q += " " + model.split()[0]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+    prices = []
+    for page in range(1, pages + 1):
+        url = f"https://www.mashina.kg/search/all/?q={requests.utils.quote(q)}&currency=2&page={page}"
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            if r.status_code != 200:
+                continue
+            html = r.text
+            links = list(dict.fromkeys(re.findall(r"/details/([a-z0-9\-]+)", html)))
+            raw_prices = re.findall(r"\$[\s\xa0\u00a0]?([\d\s\xa0\u00a0]+)", html)
+            parsed = []
+            for p in raw_prices:
+                digits = re.sub(r"\D", "", p)
+                if digits.isdigit():
+                    val = int(digits)
+                    if 1500 <= val <= 100000:
+                        parsed.append(val)
+            make_l = make.lower()
+            model_token = (model or "").split()[0].lower() if model else ""
+            for i, slug in enumerate(links):
+                slug_l = slug.lower()
+                if make_l not in slug_l:
+                    continue
+                if model_token and model_token not in ("hybrid",) and model_token not in slug_l:
+                    if not (model_token == "camry" and "camry" in slug_l):
+                        continue
+                if i < len(parsed):
+                    prices.append(parsed[i])
+        except Exception as e:
+            print("Mashina error:", e)
+    return prices
+
+
+def _mashina_slug_to_title(slug):
+    if not slug:
+        return "Авто Mashina"
+    parts = slug.split("-")
+    while parts and (len(parts[-1]) >= 10 or re.fullmatch(r"[0-9a-f]{8,}", parts[-1])):
+        parts.pop()
+    if not parts:
+        return slug
+    return " ".join(p.capitalize() for p in parts)
+
+
+def fetch_mashina_feed(pages=2):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+    results = []
+    seen_slugs = set()
+    for page in range(1, pages + 1):
+        url = f"https://www.mashina.kg/search/all/?currency=2&sort_by=upped_at+desc&page={page}"
+        try:
+            r = requests.get(url, headers=headers, timeout=25)
+            if r.status_code != 200:
+                continue
+            html = r.text
+            links = list(dict.fromkeys(re.findall(r"/details/([a-z0-9\-]+)", html)))
+            raw_prices = re.findall(r"\$[\s\xa0\u00a0]?([\d\s\xa0\u00a0]+)", html)
+            parsed = []
+            for p in raw_prices:
+                digits = re.sub(r"\D", "", p)
+                if digits.isdigit():
+                    val = int(digits)
+                    if 1500 <= val <= 100000:
+                        parsed.append(val)
+            for i, slug in enumerate(links):
+                if slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+                price = parsed[i] if i < len(parsed) else None
+                if not price:
+                    continue
+                results.append({
+                    "id": f"mashina_{slug}",
+                    "title": _mashina_slug_to_title(slug),
+                    "description": "",
+                    "price": price,
+                    "currency": "USD",
+                    "symbol": "$",
+                    "url": f"https://www.mashina.kg/details/{slug}",
+                    "city": "Бишкек",
+                    "images": None,
+                    "source": "mashina",
+                })
+        except Exception as e:
+            print("Mashina feed error:", e)
+    print(f"Mashina feed: {len(results)} объявлений")
+    return results
+
+
 def remove_price_outliers(prices):
-    """Убрать слишком дорогие и подозрительно дешёвые."""
     if len(prices) < 4:
         return prices
     med = statistics.median(prices)
-    # жёстче сверху (дорогие «хотелки»), мягче снизу но режем явный мусор
-    low, high = med * 0.55, med * 1.28
-    cleaned = [p for p in prices if low <= p <= high]
+    cleaned = [p for p in prices if med * 0.50 <= p <= med * 1.40]
     return cleaned if len(cleaned) >= 3 else prices
 
 
@@ -513,39 +599,123 @@ def percentile(data, percent):
     return s[f] * (c - idx) + s[c] * (idx - f)
 
 
-def calc_real_quick_sell_price(comparable_prices, min_comps=None):
+def calc_market_metrics(prices):
     """
-    REAL_QUICK_SELL_PRICE — цена, по которой реально быстро уйдёт.
-    Не среднее. Консервативный низ нормального очищенного рынка.
+    Возвращает:
+      market_median — рыночная (медиана)
+      quick_sell — цена быстрой продажи (умеренный низ)
+      cleaned — очищенные цены
     """
-    need = MIN_COMPARABLES if min_comps is None else min_comps
-    cleaned = remove_price_outliers(comparable_prices)
-    if len(cleaned) < need:
-        return None, cleaned
-    return percentile(cleaned, QUICK_SELL_PERCENTILE), cleaned
+    cleaned = remove_price_outliers(prices)
+    if len(cleaned) < MIN_COMPARABLES:
+        return None, None, cleaned
+    market = statistics.median(cleaned)
+    quick = percentile(cleaned, QUICK_SELL_PERCENTILE)
+    # quick_sell не выше медианы
+    if quick and market and quick > market:
+        quick = market * 0.95
+    return market, quick, cleaned
 
 
-def calc_max_buy_price(quick_sell, expenses=None, required_profit=None):
-    """
-    MAX_BUY_PRICE =
-      REAL_QUICK_SELL
-      - EXPENSES
-      - NEGOTIATION_RESERVE
-      - REQUIRED_PROFIT
-    """
+def calc_max_buy(quick_sell, expenses, required_profit):
     if not quick_sell or quick_sell <= 0:
         return None
-    exp = EXPENSES_USD if expenses is None else expenses
-    profit = REQUIRED_PROFIT_USD if required_profit is None else required_profit
     after_reserve = quick_sell * (1 - NEGOTIATION_RESERVE)
-    max_buy = after_reserve - exp - profit
-    if quick_sell > 0 and (quick_sell - max_buy) / quick_sell < MIN_PROFIT_RATIO:
-        max_buy = quick_sell * (1 - MIN_PROFIT_RATIO) - exp
+    max_buy = after_reserve - expenses - required_profit
+    if quick_sell > 0 and (quick_sell - max(max_buy, 0)) / quick_sell < MIN_PROFIT_RATIO:
+        max_buy = quick_sell * (1 - MIN_PROFIT_RATIO) - expenses
     return max(0, round(max_buy))
 
 
+def calc_deal_score(
+    seller, market, quick_sell, max_buy, net_profit, n_comps,
+    liquidity_coef, year, mileage, minor_cost, priority=False,
+):
+    """Рейтинг выгодности 0–100 для перекупа."""
+    score = 50.0
+
+    # Ниже рынка
+    if market and market > 0:
+        below = (market - seller) / market
+        score += max(-25, min(30, below * 100 * 0.9))
+
+    # Прибыль
+    if net_profit >= 1200:
+        score += 18
+    elif net_profit >= 800:
+        score += 12
+    elif net_profit >= 500:
+        score += 7
+    elif net_profit >= 300:
+        score += 3
+    elif net_profit < 0:
+        score -= 20
+    else:
+        score -= 5
+
+    # Отношение к MAX_BUY
+    if max_buy and max_buy > 0:
+        if seller <= max_buy:
+            score += 12
+        elif seller <= max_buy * (1 + NEGOTIATE_BAND):
+            score += 4
+        else:
+            score -= 15
+
+    # Ликвидность
+    score += (liquidity_coef - 1.0) * 25
+
+    # Аналоги
+    if n_comps >= 12:
+        score += 6
+    elif n_comps >= 6:
+        score += 4
+    elif n_comps >= 3:
+        score += 1
+    else:
+        score -= 8
+
+    # Год
+    if year:
+        if year >= 2018:
+            score += 5
+        elif year >= 2014:
+            score += 2
+        elif year < 2008:
+            score -= 6
+
+    # Пробег
+    if mileage:
+        if mileage < 80000:
+            score += 4
+        elif mileage < 150000:
+            score += 1
+        elif mileage > 250000:
+            score -= 6
+
+    # Мелкий ремонт
+    if minor_cost >= 400:
+        score -= 8
+    elif minor_cost >= 200:
+        score -= 4
+    elif minor_cost > 0:
+        score -= 2
+
+    if priority:
+        score += 5
+
+    return int(max(0, min(100, round(score))))
+
+
+def reliability_label(n):
+    if n >= 10:
+        return "высокая"
+    if n >= 5:
+        return "средняя"
+    return "низкая"
+
+
 def find_comparables(target_specs):
-    """Собрать максимально похожие объявления."""
     make = target_specs.get("make")
     model = target_specs.get("model")
     year = target_specs.get("year")
@@ -555,29 +725,35 @@ def find_comparables(target_specs):
     query = make
     if model:
         query += " " + model.split()[0]
-
-    # Для Camry Hybrid — уточняем запрос, чтобы аналоги были точнее
     blob_model = f"{model or ''} {target_specs.get('fuel') or ''}".lower()
-    if make == "toyota" and ("camry" in (model or "") or "камри" in (model or "")):
-        if target_specs.get("fuel") == "hybrid" or "hybrid" in blob_model or "гибрид" in blob_model:
+    if make == "toyota" and "camry" in (model or ""):
+        if target_specs.get("fuel") == "hybrid" or "hybrid" in blob_model:
             query = "toyota camry hybrid"
 
     year_from = max(year - YEAR_TOLERANCE, 1985)
     year_to = year + YEAR_TOLERANCE
-
     items = get_ads(q=query, per_page=60, year_from=year_from, year_to=year_to)
     items += get_ads(page=2, q=query, per_page=40, year_from=year_from, year_to=year_to)
 
     comps = []
     for item in items:
-        if is_bad_listing(item.get("title") or "", item.get("description") or ""):
+        if is_critical_bad(item.get("title") or "", item.get("description") or ""):
             continue
         sp = parse_ad_specs(item)
         if not sp["price"]:
             continue
         if not specs_match(target_specs, sp):
             continue
+        sp["source"] = "lalafo"
         comps.append(sp)
+
+    for p in fetch_mashina_market_prices(make, model, year):
+        comps.append({
+            "make": make, "model": model, "year": year, "price": p,
+            "source": "mashina", "title": "", "description": "",
+            "mileage": None, "engine": None, "fuel": target_specs.get("fuel"),
+            "transmission": None, "drive": None, "body": None, "ad": None,
+        })
     return comps
 
 
@@ -589,7 +765,7 @@ def analyze_and_notify(ad, seen):
     title = ad.get("title") or ""
     description = ad.get("description") or ""
 
-    if is_bad_listing(title, description):
+    if is_critical_bad(title, description):
         seen.add(ad_id)
         return
 
@@ -602,77 +778,109 @@ def analyze_and_notify(ad, seen):
         return
 
     priority = is_priority_model(target, title, description)
-    min_comps = PRIORITY_MIN_COMPARABLES if priority else MIN_COMPARABLES
-    exp = PRIORITY_EXPENSES_USD if priority else EXPENSES_USD
+    base_exp = PRIORITY_BASE_EXPENSES_USD if priority else BASE_EXPENSES_USD
     req_profit = PRIORITY_REQUIRED_PROFIT_USD if priority else REQUIRED_PROFIT_USD
+    minor_cost = estimate_minor_repair_cost(title, description)
+    total_expenses = base_exp + minor_cost
 
     comps = find_comparables(target)
     prices = [c["price"] for c in comps if c.get("price")]
+    src_lalafo = sum(1 for c in comps if c.get("source") == "lalafo")
+    src_mashina = sum(1 for c in comps if c.get("source") == "mashina")
 
-    quick_sell, cleaned = calc_real_quick_sell_price(prices, min_comps=min_comps)
-    if quick_sell is None:
-        print(f"  skip (мало данных): {title[:40]} | comps={len(prices)} | priority={priority}")
-        seen.add(ad_id); return
+    market, quick_sell, cleaned = calc_market_metrics(prices)
+    if market is None or quick_sell is None:
+        print(f"  skip (мало данных): {title[:40]} | n={len(prices)}")
+        seen.add(ad_id)
+        return
 
-    max_buy = calc_max_buy_price(quick_sell, expenses=exp, required_profit=req_profit)
+    max_buy = calc_max_buy(quick_sell, total_expenses, req_profit)
     if not max_buy:
-        seen.add(ad_id); return
+        seen.add(ad_id)
+        return
 
     seller = target["price"]
+    net_profit = quick_sell - seller - total_expenses
+    below_market_pct = ((market - seller) / market * 100) if market else 0
 
-    # ГЛАВНОЕ ПРАВИЛО
-    if seller > max_buy:
-        print(f"  skip (дорого): {title[:35]} | ask={seller}$ max_buy={max_buy}$ qs={quick_sell:.0f}$ | prio={priority}")
-        seen.add(ad_id); return
+    # Статус сделки
+    if seller <= max_buy:
+        status = "buy"          # СКУПОЧНАЯ ЦЕНА
+        status_line = "🔥 <b>СКУПОЧНАЯ ЦЕНА</b>"
+    elif seller <= max_buy * (1 + NEGOTIATE_BAND):
+        status = "negotiate"    # МОЖНО ТОРГОВАТЬСЯ
+        status_line = "🟡 <b>МОЖНО ТОРГОВАТЬСЯ</b>"
+    else:
+        print(f"  skip (невыгодно): {title[:35]} | ask={seller}$ max={max_buy}$")
+        seen.add(ad_id)
+        return
 
-    # REAL_BUY
-    expected_profit = quick_sell - seller - exp
-    margin_pct = (expected_profit / quick_sell * 100) if quick_sell else 0
-    urgent = text_has(f"{title} {description}", URGENT_KEYWORDS)
+    liq_label, liq_coef = get_liquidity(target["make"], target["model"])
+    score = calc_deal_score(
+        seller, market, quick_sell, max_buy, net_profit, len(cleaned),
+        liq_coef, target["year"], target.get("mileage"), minor_cost, priority,
+    )
 
-    url = "https://lalafo.kg" + (ad.get("url") or "")
+    if score < MIN_SCORE_TO_SEND:
+        print(f"  skip (score {score}): {title[:40]}")
+        seen.add(ad_id)
+        return
+
+    # Подпись рейтинга
+    if score >= 90:
+        score_emoji = "🔥 отличная покупка"
+    elif score >= 80:
+        score_emoji = "🟢 очень выгодно"
+    else:
+        score_emoji = "🟡 можно рассмотреть"
+
+    if ad.get("source") == "mashina" or str(ad.get("id") or "").startswith("mashina_"):
+        url = ad.get("url") or ""
+        source_label = "Mashina.kg"
+    else:
+        url = "https://lalafo.kg" + (ad.get("url") or "")
+        source_label = "Lalafo"
+
     city = ad.get("city") or "Бишкек"
     photo = None
     if ad.get("images"):
         photo = ad["images"][0].get("original_url") or ad["images"][0].get("thumbnail_url")
 
-    seller_kgs = round(seller * USD_KGS_RATE)
-    max_buy_kgs = round(max_buy * USD_KGS_RATE)
-    qs_kgs = round(quick_sell * USD_KGS_RATE)
-
+    urgent = text_has(f"{title} {description}", URGENT_KEYWORDS)
     urgent_mark = "⚡ <b>СРОЧНО</b>\n" if urgent else ""
     prio_mark = "⭐ <b>ПРИОРИТЕТ: Camry Hybrid 70</b>\n" if priority else ""
+    rel = reliability_label(len(cleaned))
+
     text = (
         f"{urgent_mark}{prio_mark}"
-        f"✅ <b>REAL BUY — МОЖНО ЗАБИРАТЬ</b>\n\n"
-        f"<b>{title}</b>\n"
-        f"📍 {city}\n\n"
-        f"💰 <b>Цена продавца:</b> {seller_kgs:,.0f} сом (~{seller}$)\n"
-        f"🛒 <b>MAX BUY (твой потолок):</b> {max_buy_kgs:,.0f} сом (~{max_buy}$)\n"
-        f"🏷 <b>Быстрая продажа (ориентир):</b> ~{qs_kgs:,.0f} сом (~{quick_sell:.0f}$)\n\n"
-        f"📉 Запас до потолка: <b>{max_buy - seller}$</b>\n"
-        f"💵 Ожид. прибыль после расходов: <b>~{expected_profit:.0f}$</b> ({margin_pct:.0f}%)\n"
-        f"🔧 Расходы: {exp}$ | торг {int(NEGOTIATION_RESERVE*100)}% | цель прибыли {req_profit}$\n"
-        f"🔍 Чистых аналогов: {len(cleaned)} (из {len(prices)})\n\n"
+        f"🚗 <b>{title}</b>\n"
+        f"📍 {city} | 🌐 {source_label}\n\n"
+        f"💰 <b>Цена продавца:</b> ${seller:,.0f}\n"
+        f"📊 <b>Рынок (медиана):</b> ${market:,.0f}\n"
+        f"⚡ <b>Быстрая продажа:</b> ${quick_sell:,.0f}\n"
+        f"🎯 <b>Макс. скупка:</b> ${max_buy:,.0f}\n\n"
+        f"📉 Ниже рынка: <b>{below_market_pct:.1f}%</b>\n"
+        f"💵 Потенц. чистая прибыль: <b>~${net_profit:,.0f}</b>\n"
+        f"🔧 Расходы: ~${total_expenses:,.0f}"
+        + (f" (из них косметика ~${minor_cost})" if minor_cost else "")
+        + f"\n"
+        f"📊 Аналогов: {len(cleaned)} (Lalafo:{src_lalafo} Mashina:{src_mashina})\n"
+        f"📐 Надёжность оценки: {rel}\n"
+        f"📈 Ликвидность: {liq_label}\n\n"
+        f"⭐ Выгодность: <b>{score}/100</b> — {score_emoji}\n\n"
+        f"{status_line}\n\n"
         f"<a href='{url}'>Открыть объявление</a>"
     )
 
     send_telegram(text, photo)
-    tag = "PRIORITY_CAMRY70" if priority else "REAL_BUY"
-    print(f"[{datetime.now()}] {tag} | {title[:40]} | ask={seller}$ max={max_buy}$ profit~{expected_profit:.0f}$")
+    print(f"[{datetime.now()}] {status.upper()} score={score} | {title[:40]} | ask={seller}$ profit~{net_profit:.0f}$")
     seen.add(ad_id)
 
 
 def main():
     print("Бот REAL_BUY / MAX_BUY запущен...")
     send_telegram(
-        "🎩 <b>Господин Дияр, ваш бот полностью готов служить вам.</b>\n\n"
-        f"✅ Алгоритм скупки активен\n"
-        f"⭐ Приоритет: <b>Camry Hybrid 70</b> (2017–2024)\n"
-        f"• Аналоги: марка+модель+год±{YEAR_TOLERANCE}, пробег±{int(MILEAGE_TOLERANCE*100)}%\n"
-        f"• Быстрая продажа = {QUICK_SELL_PERCENTILE}-й перцентиль\n"
-        f"• MAX_BUY = продажа − расходы − торг − прибыль\n"
-        f"• Кидаю только если цена ≤ MAX_BUY"
+        "🎩 <b>Господин Дияр, ваш бот полностью готов служить вам.</b>"
     )
     seen = load_seen()
     print(f"seen={len(seen)}")
@@ -680,14 +888,20 @@ def main():
     while True:
         try:
             print(f"\n[{datetime.now()}] Проверка...")
-            ads = get_ads(page=1, per_page=40)
-            print(f"Новых с ленты: {len(ads)}")
-            if not ads:
-                time.sleep(CHECK_INTERVAL)
-                continue
 
-            for ad in ads:
+            ads_lalafo = get_ads(page=1, per_page=40)
+            print(f"Lalafo: {len(ads_lalafo)}")
+            for ad in ads_lalafo:
+                ad["source"] = ad.get("source") or "lalafo"
                 analyze_and_notify(ad, seen)
+
+            try:
+                ads_mashina = fetch_mashina_feed(pages=2)
+                print(f"Mashina: {len(ads_mashina)}")
+                for ad in ads_mashina:
+                    analyze_and_notify(ad, seen)
+            except Exception as e:
+                print("Mashina feed fail:", e)
 
             save_seen(seen)
             print(f"Цикл OK, сон {CHECK_INTERVAL}с")
@@ -699,4 +913,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        

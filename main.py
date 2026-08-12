@@ -7,8 +7,8 @@ import requests
 from datetime import datetime
 
 # ================== CONFIG (меняй здесь) ==================
-BOT_TOKEN = "8677610768:AAHDOe1Xzm-sS_3GnRZvEM38GlQmx7uLJ7c"
-CHAT_ID = "8569472160"
+BOT_TOKEN = "8850394642:AAFSVcUFOBE9WdAQxNVdDLzTg7GBpN8x1yc"
+CHAT_ID = "8078921787"
 
 CHECK_INTERVAL = 50
 CITY_ID = 103184

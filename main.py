@@ -6,33 +6,36 @@ import statistics
 import requests
 from datetime import datetime
 
-# ================== CONFIG (меняй здесь) ==================
+# ================== CONFIG ==================
 BOT_TOKEN = "8850394642:AAFSVcUFOBE9WdAQxNVdDLzTg7GBpN8x1yc"
 CHAT_ID = "8078921787"
 
 CHECK_INTERVAL = 50
 CITY_ID = 103184
+# Легковые авто на Lalafo KG
+CATEGORY_ID = 1501
 SEEN_FILE = "seen_ads.json"
 USD_KGS_RATE = 87.5
 
 # --- Скупка ---
-# BUY_PRICE = MARKET_PRICE * (1 - REQUIRED_MARGIN_PCT)  [ликвидность чуть двигает pct]
-REQUIRED_MARGIN_PCT = 0.23          # рынок $15000 → скупка ~$11550
-REQUIRED_MARGIN_PCT_HIGH_LIQ = 0.20 # ликвидные (Camry и т.п.) чуть мягче
-REQUIRED_MARGIN_PCT_LOW_LIQ = 0.28  # неликвид — жёстче
-
-MIN_PROFIT = 800                    # MARKET - LISTING минимум ($)
-MIN_DISCOUNT = 0.18                 # минимум 18% ниже медианы рынка
-MIN_SIMILAR_LISTINGS = 5            # меньше — не считаем рынок и НЕ шлём
+REQUIRED_MARGIN_PCT = 0.23
+REQUIRED_MARGIN_PCT_HIGH_LIQ = 0.20
+REQUIRED_MARGIN_PCT_LOW_LIQ = 0.28
+MIN_PROFIT = 800
+MIN_DISCOUNT = 0.18
+MIN_SIMILAR_LISTINGS = 5
 MIN_YEAR = 2008
+STAGE1_MIN_DISCOUNT = 0.12
 
-# Этап 1 (быстрый отсев): грубая оценка без полного поиска
-STAGE1_MIN_DISCOUNT = 0.12          # если даже грубо скидка < 12% — отбрасываем
+# Цена как фильтр релевантности (USD)
+MIN_PRICE_USD = 3500
+MAX_PRICE_USD = 80000
 
-# Оценка
-# 🔥🔥🔥 discount >= 0.28 и profit >= 1500
-# 🔥🔥   discount >= 0.22 и profit >= 1000
-# 🔥     остальное, прошедшее фильтры
+# Доп. буст, не основной фильтр
+URGENT_BOOST_KEYWORDS = [
+    "срочно", "торг", "уступлю", "сегодня", "торг реальному",
+    "нужны деньги", "быстро продам", "цена снижена",
+]
 
 # ===========================================================
 
@@ -62,13 +65,18 @@ MEDIUM_LIQUIDITY_MAKES = {
     "mercedes", "mercedes-benz", "audi", "subaru", "mazda", "volkswagen", "vw",
 }
 
-JUNK_KEYWORDS = [
-    "запчаст", "диск", "диски", "ремень", "турбина", "бампер", "крыло",
-    "дверь", "капот", "стекло", "зеркало", "подшипник", "сайлент",
-    "амортизатор", "стойка", "радиатор", "генератор", "стартер",
-    "компрессор", "шины", "резина", "колесо", "колпак", "ключ", "замок",
-    "магнитола", "услуг", "работа", "разбор", "контрактн", "в разборе",
-    "фара", "фары", "стоп", "стопы", "фонарь", "поворотник",
+# Стоп-слова: запчасти / аксессуары / услуги (title + description)
+STOP_WORDS = [
+    "чехол", "стекло на", "стекло для", "запчаст", "запчасти", "аксессуар",
+    "коробка от", "документы на", "ремонт", "услуг", "работаю", "работы",
+    "разбор", "в разборе", "контрактн", "б/у запчаст", "продаю запчаст",
+    "диск", "диски", "ремень", "турбина", "бампер", "крыло", "дверь",
+    "капот", "зеркало", "подшипник", "сайлент", "амортизатор", "стойка",
+    "радиатор", "генератор", "стартер", "компрессор", "шины", "резина",
+    "колесо", "колпак", "ключ зажиган", "магнитола", "парктроник",
+    "фара", "фары", "стоп", "стопы", "фонарь", "поворотник", "коврик",
+    "накидк", "оплетка", "оплётка", "щетк", "дворник", "фильтр",
+    "колодк", "свеч", "аккумулятор", "аймак", "масло мотор",
 ]
 
 CRITICAL_DAMAGE = [
@@ -111,8 +119,16 @@ CYRILLIC_MAKE_MAP = {
     "мазда": "mazda", "субару": "subaru", "мицубиси": "mitsubishi", "камри": "camry",
 }
 
+# Минимально адекватная цена модели (анти-мусор)
+PRICE_FLOORS = {
+    ("lexus", "gx"): 40000, ("lexus", "lx"): 45000, ("lexus", "rx"): 18000,
+    ("lexus", "es"): 12000, ("toyota", "prado"): 18000, ("toyota", "land"): 22000,
+    ("toyota", "camry"): 7000, ("toyota", "highlander"): 15000,
+    ("bmw", "x5"): 15000, ("bmw", "x7"): 35000,
+    ("mercedes", "g"): 40000, ("mercedes-benz", "g"): 40000,
+}
 
-# ---------- seen: id -> last_price (для смены цены) ----------
+
 def load_seen():
     if not os.path.exists(SEEN_FILE):
         return {}
@@ -129,7 +145,6 @@ def load_seen():
 
 
 def save_seen(seen):
-    # храним последние ~4000
     items = list(seen.items())[-4000:]
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(dict(items), f)
@@ -238,9 +253,7 @@ def extract_engine(text):
     if not text:
         return None
     m = re.search(r"\b([1-6][.,]\d)\s*(л|l)?\b", text.lower())
-    if m:
-        return m.group(1).replace(",", ".")
-    return None
+    return m.group(1).replace(",", ".") if m else None
 
 
 def extract_fuel(text):
@@ -289,7 +302,6 @@ def extract_body(text):
 
 
 def price_to_usd(ad):
-    """Строго в USD. Не смешиваем сомы и доллары."""
     price = ad.get("price")
     if price is None:
         return None
@@ -304,9 +316,8 @@ def price_to_usd(ad):
     elif currency in ("KGS", "COM", "СОМ", "SOM") or symbol in ("COM", "С", "СОМ", "SOM"):
         usd = price / USD_KGS_RATE
     else:
-        # эвристика: крупные числа = сомы
         usd = price / USD_KGS_RATE if price >= 80000 else price
-    if usd < 2000 or usd > 100000:
+    if usd < 1500 or usd > 120000:
         return None
     return round(usd)
 
@@ -337,9 +348,14 @@ def normalize(ad):
     }
 
 
-def is_blocked(title, description=""):
+def is_offtopic_or_blocked(title, description=""):
+    """
+    Фильтр мусора:
+    - стоп-слова (запчасти/чехлы/услуги) в title И description
+    - битые / заказ / рассрочка / нерастаможен
+    """
     blob = f"{title} {description}"
-    if text_has(title, JUNK_KEYWORDS):
+    if text_has(blob, STOP_WORDS):
         return True
     if text_has(blob, CRITICAL_DAMAGE):
         return True
@@ -350,6 +366,26 @@ def is_blocked(title, description=""):
     if text_has(blob, NOT_CLEARED):
         return True
     return False
+
+
+def has_urgent_marker(title, description=""):
+    return text_has(f"{title} {description}", URGENT_BOOST_KEYWORDS)
+
+
+def sane_min_price(make, model, year=None):
+    make = (make or "").lower()
+    model = (model or "").lower()
+    first = model.split()[0] if model else ""
+    floor = MIN_PRICE_USD
+    for (m, tok), f in PRICE_FLOORS.items():
+        if make == m and (tok in model or first == tok or tok in first):
+            floor = max(floor, f)
+            break
+    if year and year >= 2022 and floor >= 15000:
+        floor = int(floor * 1.35)
+    elif year and year >= 2018 and floor >= 15000:
+        floor = int(floor * 1.15)
+    return floor
 
 
 def get_liquidity_margin_pct(make, model):
@@ -365,13 +401,14 @@ def get_liquidity_margin_pct(make, model):
 
 
 def get_ads(page=1, q=None, per_page=50, year_from=None, year_to=None):
+    """Только Lalafo, строго category_id = легковые."""
     params = {
         "per-page": per_page,
         "page": page,
         "expand": "url",
         "sort_by": "newest",
         "city_id": CITY_ID,
-        "category_id": 1501,
+        "category_id": CATEGORY_ID,
     }
     if q:
         params["q"] = q
@@ -394,7 +431,6 @@ def get_ads(page=1, q=None, per_page=50, year_from=None, year_to=None):
 
 
 def similar_match(target, cand):
-    """Максимально похожие. Нет хар-ки у одного — не режем."""
     if not target.get("make") or not cand.get("make"):
         return False
     if target["make"] != cand["make"]:
@@ -425,7 +461,6 @@ def remove_outliers(prices):
 
 
 def find_similar_prices(car):
-    """Несколько аналогов → список цен USD."""
     make, model, year = car.get("make"), car.get("model"), car.get("year")
     if not make or not year:
         return []
@@ -435,18 +470,20 @@ def find_similar_prices(car):
     if make == "toyota" and model and "camry" in model and car.get("fuel") == "hybrid":
         query = "toyota camry hybrid"
 
-    items = get_ads(q=query, per_page=60, year_from=max(year - 1, 1985), year_to=year + 1)
-    items += get_ads(page=2, q=query, per_page=40, year_from=max(year - 1, 1985), year_to=year + 1)
+    year_from, year_to = max(year - 1, 1985), year + 1
+    items = get_ads(q=query, per_page=60, year_from=year_from, year_to=year_to)
+    items += get_ads(page=2, q=query, per_page=40, year_from=year_from, year_to=year_to)
 
     prices = []
     for item in items:
-        if is_blocked(item.get("title") or "", item.get("description") or ""):
+        if is_offtopic_or_blocked(item.get("title") or "", item.get("description") or ""):
             continue
         c = normalize(item)
         if not c["price_usd"]:
             continue
-        # не брать само это объявление
         if str(c["id"]) == str(car.get("id")):
+            continue
+        if c["price_usd"] < MIN_PRICE_USD or c["price_usd"] > MAX_PRICE_USD:
             continue
         if not similar_match(car, c):
             continue
@@ -455,39 +492,33 @@ def find_similar_prices(car):
 
 
 def stage1_rough_reject(car):
-    """
-    Быстрый отсев без полного поиска аналогов.
-    Грубо: ищем по марке+модели одну страницу, медиана, скидка.
-    """
     make, model, year = car.get("make"), car.get("model"), car.get("year")
     listing = car.get("price_usd")
     if not make or not listing or not year:
-        return True  # reject
+        return True
     query = make + ((" " + model.split()[0]) if model else "")
-    items = get_ads(q=query, per_page=30, year_from=max(year - 2, 1985), year_to=year + 2)
+    items = get_ads(
+        q=query, per_page=30,
+        year_from=max(year - 2, 1985), year_to=year + 2,
+    )
     prices = []
     for item in items:
-        if is_blocked(item.get("title") or "", item.get("description") or ""):
+        if is_offtopic_or_blocked(item.get("title") or "", item.get("description") or ""):
             continue
         p = price_to_usd(item)
-        if p:
+        if p and MIN_PRICE_USD <= p <= MAX_PRICE_USD:
             prices.append(p)
     if len(prices) < 3:
-        return False  # не отсекаем — пусть этап 2 решает
+        return False
     med = statistics.median(prices)
     if med <= 0:
         return True
     discount = (med - listing) / med
-    if discount < STAGE1_MIN_DISCOUNT:
-        return True  # очевидно невыгодно
-    # подозрительно дёшево vs грубый рынок (>45%) — на этап 2, не режем здесь
-    return False
+    return discount < STAGE1_MIN_DISCOUNT
 
 
-def deal_score(discount, potential_profit, n_similar, liq_label):
-    """Главный вес — выгода по цене."""
+def deal_score(discount, potential_profit, n_similar, liq_label, urgent=False):
     score = 0.0
-    # discount доминирует
     score += min(55, max(0, discount * 100 * 1.6))
     if potential_profit >= 2500:
         score += 25
@@ -507,6 +538,8 @@ def deal_score(discount, potential_profit, n_similar, liq_label):
         score += 8
     elif liq_label == "низкая":
         score -= 10
+    if urgent:
+        score += 3
     return int(max(0, min(100, round(score))))
 
 
@@ -525,7 +558,9 @@ def analyze(ad, seen):
 
     title = ad.get("title") or ""
     description = ad.get("description") or ""
-    if is_blocked(title, description):
+
+    # 1) категория уже в API; 2) стоп-слова title+desc
+    if is_offtopic_or_blocked(title, description):
         seen[ad_id] = price_to_usd(ad)
         return
 
@@ -538,18 +573,26 @@ def analyze(ad, seen):
         seen[ad_id] = listing
         return
 
-    # дедуп: уже слали с той же ценой
+    # 3) цена в разумном диапазоне категории
+    if listing < MIN_PRICE_USD or listing > MAX_PRICE_USD:
+        print(f"  skip (цена вне диапазона ${listing}): {title[:40]}")
+        seen[ad_id] = listing
+        return
+
+    floor = sane_min_price(car["make"], car["model"], car["year"])
+    if listing < floor:
+        print(f"  skip (ниже адекватной ${listing}<${floor}): {title[:40]}")
+        seen[ad_id] = listing
+        return
+
     if ad_id in seen and seen[ad_id] is not None and seen[ad_id] == listing:
         return
-    # цена изменилась или новое — анализируем
 
-    # ----- ЭТАП 1: быстрый отсев -----
     if stage1_rough_reject(car):
         print(f"  stage1 drop: {title[:40]} | ${listing}")
         seen[ad_id] = listing
         return
 
-    # ----- ЭТАП 2: точные аналоги -----
     similar_prices = find_similar_prices(car)
     if len(similar_prices) < MIN_SIMILAR_LISTINGS:
         print(f"  skip (мало аналогов {len(similar_prices)}): {title[:40]}")
@@ -561,10 +604,8 @@ def analyze(ad, seen):
         seen[ad_id] = listing
         return
 
-    # Подозрительно низкая цена vs рынок (>40%) — проверить сопоставимость уже через similar_match;
-    # если аналоги есть и медиана стабильна — ок, но если listing < market * 0.55 — осторожно
     if listing < market_price * 0.55:
-        print(f"  skip (подозрительно дёшево): {title[:40]} | ${listing} vs market ${market_price:.0f}")
+        print(f"  skip (подозрительно дёшево): {title[:40]} | ${listing} vs ${market_price:.0f}")
         seen[ad_id] = listing
         return
 
@@ -573,38 +614,37 @@ def analyze(ad, seen):
     discount = (market_price - listing) / market_price
     potential_profit = market_price - listing
 
-    # ОСНОВНОЙ ФИЛЬТР
     if listing >= buy_price:
-        print(f"  skip (>= BUY): {title[:35]} | list ${listing} buy ${buy_price}")
+        print(f"  skip (>= BUY): {title[:35]} | ${listing} buy ${buy_price}")
         seen[ad_id] = listing
         return
-
     if discount < MIN_DISCOUNT:
         print(f"  skip (discount {discount*100:.1f}%): {title[:40]}")
         seen[ad_id] = listing
         return
-
     if potential_profit < MIN_PROFIT:
         print(f"  skip (profit ${potential_profit:.0f}): {title[:40]}")
         seen[ad_id] = listing
         return
 
-    score = deal_score(discount, potential_profit, len(similar_prices), liq_label)
-    fires = score_fires(discount, potential_profit)
-    # слабые score не шлём
+    urgent = has_urgent_marker(title, description)
+    score = deal_score(discount, potential_profit, len(similar_prices), liq_label, urgent)
     if score < 70:
         print(f"  skip (score {score}): {title[:40]}")
         seen[ad_id] = listing
         return
 
+    fires = score_fires(discount, potential_profit)
     url = "https://lalafo.kg" + (car["url"] or "")
     photo = None
     if car.get("images"):
         photo = car["images"][0].get("original_url") or car["images"][0].get("thumbnail_url")
 
+    urgent_mark = "⚡ " if urgent else ""
     text = (
         f"🚨 <b>СКУПКА</b> {fires}\n\n"
-        f"<b>{car['title']}</b>\n"
+        f"{urgent_mark}<b>{car['title']}</b>\n"
+        f"Источник: Lalafo\n"
         f"Цена: <b>${listing:,.0f}</b>\n"
         f"Рынок: ~${market_price:,.0f}\n"
         f"Цена скупки: ≤${buy_price:,.0f}\n"
@@ -612,25 +652,25 @@ def analyze(ad, seen):
         f"Оценка: {fires} ({score}/100)\n"
         f"<a href='{url}'>Ссылка</a>"
     )
-
     send_telegram(text, photo)
-    print(f"[{datetime.now()}] SEND {fires} {score} | {title[:40]} | ${listing} market ${market_price:.0f}")
+    print(f"[{datetime.now()}] SEND {fires} {score} | {title[:40]} | ${listing}")
     seen[ad_id] = listing
 
 
 def main():
-    print("Бот СКУПКА запущен...")
+    print("Бот СКУПКА Lalafo-only запущен...")
     send_telegram("🎩 <b>Господин Дияр, ваш бот полностью готов служить вам.</b>")
     seen = load_seen()
-    print(f"seen={len(seen)} | margin={REQUIRED_MARGIN_PCT*100:.0f}% min_profit=${MIN_PROFIT}")
+    print(
+        f"seen={len(seen)} | cat={CATEGORY_ID} | "
+        f"price ${MIN_PRICE_USD}-{MAX_PRICE_USD} | margin={REQUIRED_MARGIN_PCT*100:.0f}%"
+    )
 
     while True:
         try:
-            print(f"\n[{datetime.now()}] Проверка Lalafo...")
+            print(f"\n[{datetime.now()}] Lalafo cat={CATEGORY_ID}...")
             ads = get_ads(page=1, per_page=40)
             print(f"Лента: {len(ads)}")
-            # сначала потенциально более дешёвые (грубо) — но API already newest;
-            # анализируем все, stage1 отсеет
             for ad in ads:
                 try:
                     analyze(ad, seen)
